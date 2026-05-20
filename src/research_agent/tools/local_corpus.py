@@ -261,13 +261,30 @@ def index(
     job: Job,
     *,
     models_config: dict[str, Any] | None = None,
-) -> dict[str, int]:
+    per_page: bool = False,
+) -> dict[str, Any]:
     """Index every supported file under ``corpus_path`` into ``job``.
 
     Returns a summary dict with ``files_indexed``, ``files_skipped``,
-    ``chunks_indexed``, ``chunks_skipped``, and ``embed_dim``. Idempotent —
+    ``chunks_indexed``, ``chunks_skipped``, ``pages_indexed``,
+    ``pages_skipped``, ``per_page``, and ``embed_dim``. Idempotent —
     chunks already present in ``sources`` (matched by sha256) are linked
     to the job without re-embedding.
+
+    When ``per_page=True``, PDFs use :func:`pdf.extract_pages_sync` and
+    write one :class:`Source` row per page so the dossier extractor
+    (issue #353 / epic #359) can record per-page findings without the
+    legacy chunker straddling page boundaries. A page that exceeds the
+    chunk-target token budget is sub-chunked **within that page only**
+    and the sub-chunk index is recorded as ``metadata.page_chunk``;
+    sub-chunking never crosses pages. HTML / MD / TXT files have no
+    page concept, so each chunk records ``metadata.page_no = None`` but
+    keeps the same ``metadata.parent_file`` so coverage rollup can group
+    chunks by their source file.
+
+    When ``per_page=False`` (default), behaviour is unchanged: one
+    embedding batch per file, no metadata stamping, ``pages_indexed`` /
+    ``pages_skipped`` are zero.
     """
     root = Path(corpus_path)
     base_url, model_name = _resolve_embedding_endpoint(models_config)
@@ -276,8 +293,25 @@ def index(
     files_skipped = 0
     chunks_indexed = 0
     chunks_skipped = 0
+    pages_indexed = 0
+    pages_skipped = 0
 
     for file_path in _walk_corpus(root):
+        if per_page and file_path.suffix.lower() == ".pdf":
+            stats = _index_pdf_per_page(
+                file_path,
+                job,
+                base_url=base_url,
+                model_name=model_name,
+            )
+            files_indexed += stats["files_indexed"]
+            files_skipped += stats["files_skipped"]
+            chunks_indexed += stats["chunks_indexed"]
+            chunks_skipped += stats["chunks_skipped"]
+            pages_indexed += stats["pages_indexed"]
+            pages_skipped += stats["pages_skipped"]
+            continue
+
         try:
             raw_text, _kind_hint = _extract_text(file_path)
         except Exception as exc:  # noqa: BLE001
@@ -313,6 +347,19 @@ def index(
             for chunk_idx, vec in zip(to_embed_idx, vectors, strict=True)
         }
 
+        file_url = file_path.as_uri()
+        # Default path also stamps `parent_file` when per_page=True so
+        # callers walking the coverage ledger can group HTML / MD / TXT
+        # chunks under a single file unit. page_no stays None because
+        # these formats have no page concept.
+        file_metadata: dict[str, Any] | None = None
+        if per_page:
+            file_metadata = {
+                "parent_file": file_url,
+                "page_no": None,
+                "page_chunk": None,
+            }
+
         for i, chunk in enumerate(chunks):
             embedding_blob = new_blobs.get(i)
             if embedding_blob is None:
@@ -321,11 +368,12 @@ def index(
                 chunks_indexed += 1
             write_source(
                 job,
-                url=file_path.as_uri(),
+                url=file_url,
                 title=file_path.name,
                 raw_content=chunk,
                 kind="local",
                 embedding=embedding_blob,
+                metadata=file_metadata,
             )
 
         files_indexed += 1
@@ -335,8 +383,188 @@ def index(
         "files_skipped": files_skipped,
         "chunks_indexed": chunks_indexed,
         "chunks_skipped": chunks_skipped,
+        "pages_indexed": pages_indexed,
+        "pages_skipped": pages_skipped,
+        "per_page": per_page,
         "embed_dim": EMBED_DIM,
     }
+
+
+def _index_pdf_per_page(
+    file_path: Path,
+    job: Job,
+    *,
+    base_url: str,
+    model_name: str,
+) -> dict[str, int]:
+    """Index one PDF as one :class:`Source` row per page (dossier mode).
+
+    Calls :func:`pdf.extract_pages_sync` to get ``[(page_no, text), ...]``
+    and writes one row per page. A page whose text exceeds the chunk
+    target is sub-chunked **inside that page only**; each sub-chunk
+    records the same ``page_no`` and a distinct 1-based ``page_chunk``
+    in ``metadata``. The chunker never crosses page boundaries.
+
+    Returns the same shape as :func:`index`'s per-file accumulator so
+    the outer loop can fold the counters in unchanged.
+    """
+    from research_agent.tools import pdf as pdf_mod  # lazy
+
+    empty_summary = {
+        "files_indexed": 0,
+        "files_skipped": 0,
+        "chunks_indexed": 0,
+        "chunks_skipped": 0,
+        "pages_indexed": 0,
+        "pages_skipped": 0,
+    }
+
+    try:
+        pages = pdf_mod.extract_pages_sync(file_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "pdf per-page extract failed for %s: %s", file_path, exc
+        )
+        return {**empty_summary, "files_skipped": 1}
+
+    if not pages:
+        return {**empty_summary, "files_skipped": 1}
+
+    file_url = file_path.as_uri()
+
+    # Materialise per-page sub-chunks first so we can batch-embed every
+    # row produced by this file in a single embeddings call. Each entry
+    # is ``(page_no, page_chunk_no_or_None, cleaned_chunk_text,
+    # source_text_with_identity)``; an empty page contributes no entries
+    # (and is counted as a skipped page so coverage rollup can see the gap).
+    page_chunks: list[tuple[int, int | None, str, str]] = []
+    pages_indexed = 0
+    pages_skipped = 0
+    for page_no, page_text in pages:
+        cleaned = clean_content(page_text) if page_text else ""
+        if not cleaned:
+            pages_skipped += 1
+            continue
+        within_page = _chunk_text(cleaned)
+        if not within_page:
+            pages_skipped += 1
+            continue
+        pages_indexed += 1
+        if len(within_page) == 1:
+            chunk_text = within_page[0]
+            page_chunks.append(
+                (
+                    page_no,
+                    None,
+                    chunk_text,
+                    _per_page_source_text(
+                        chunk_text,
+                        parent_file=file_url,
+                        page_no=page_no,
+                        page_chunk=None,
+                    ),
+                )
+            )
+        else:
+            for idx, sub in enumerate(within_page, start=1):
+                page_chunks.append(
+                    (
+                        page_no,
+                        idx,
+                        sub,
+                        _per_page_source_text(
+                            sub,
+                            parent_file=file_url,
+                            page_no=page_no,
+                            page_chunk=idx,
+                        ),
+                    )
+                )
+
+    if not page_chunks:
+        return {
+            **empty_summary,
+            "files_skipped": 1,
+            "pages_indexed": pages_indexed,
+            "pages_skipped": pages_skipped,
+        }
+
+    chunk_shas = [content_sha256(clean_content(c)) for _, _, _, c in page_chunks]
+    existing = _existing_shas(job.db_path, chunk_shas)
+    to_embed_idx = [
+        i for i, sha in enumerate(chunk_shas) if sha not in existing
+    ]
+    embed_inputs = [page_chunks[i][2] for i in to_embed_idx]
+
+    if embed_inputs:
+        vectors = _embed_chunks_sync(embed_inputs, base_url, model_name)
+    else:
+        vectors = []
+
+    new_blobs: dict[int, bytes] = {
+        chunk_idx: _pack_embedding(vec)
+        for chunk_idx, vec in zip(to_embed_idx, vectors, strict=True)
+    }
+
+    chunks_indexed = 0
+    chunks_skipped = 0
+    for i, (page_no, page_chunk_no, _chunk_text_for_embedding, source_text) in enumerate(
+        page_chunks
+    ):
+        embedding_blob = new_blobs.get(i)
+        if embedding_blob is None:
+            chunks_skipped += 1
+        else:
+            chunks_indexed += 1
+        write_source(
+            job,
+            url=file_url,
+            title=file_path.name,
+            raw_content=source_text,
+            kind="local",
+            embedding=embedding_blob,
+            metadata={
+                "parent_file": file_url,
+                "page_no": page_no,
+                "page_chunk": page_chunk_no,
+            },
+        )
+
+    return {
+        "files_indexed": 1,
+        "files_skipped": 0,
+        "chunks_indexed": chunks_indexed,
+        "chunks_skipped": chunks_skipped,
+        "pages_indexed": pages_indexed,
+        "pages_skipped": pages_skipped,
+    }
+
+
+def _per_page_source_text(
+    chunk_text: str,
+    *,
+    parent_file: str,
+    page_no: int,
+    page_chunk: int | None,
+) -> str:
+    """Return persisted text with deterministic page identity metadata.
+
+    ``write_source`` dedupes by cleaned content hash, but dossier mode needs
+    two pages with identical visible text to remain two distinct Source rows
+    with different ``metadata.page_no`` values. The HTML comment is stable,
+    human-inspectable in raw markdown, and does not affect the embedding
+    input because callers embed ``chunk_text`` before passing this persisted
+    source text to storage.
+    """
+    page_chunk_text = "" if page_chunk is None else str(page_chunk)
+    return (
+        "<!-- local_corpus_page_identity\n"
+        f"parent_file: {parent_file}\n"
+        f"page_no: {page_no}\n"
+        f"page_chunk: {page_chunk_text}\n"
+        "-->\n\n"
+        f"{chunk_text}"
+    )
 
 
 def _existing_shas(db_path: Path, shas: list[str]) -> set[str]:
