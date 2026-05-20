@@ -734,7 +734,7 @@ async def _inbox_watcher(
     (inbox_dir / "processed").mkdir(parents=True, exist_ok=True)
     # Dossier mode: opted-in jobs index per-page so the dossier rollup
     # (epic #359) can group findings by file. Off by default.
-    per_page = bool((job.intake or {}).get("corpus_dossier"))
+    per_page = _intake_bool((job.intake or {}).get("corpus_dossier"))
 
     try:
         while not should_stop.is_set():
@@ -1011,6 +1011,55 @@ async def _stop_flag_watcher(
         return
 
 
+_INTAKE_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _intake_bool(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in _INTAKE_TRUTHY
+    return bool(value)
+
+
+async def _index_intake_corpus(job: Job) -> dict[str, Any] | None:
+    """Index ``intake['corpus']`` once at daemon startup (impl guide §7).
+
+    Idempotent — already-indexed chunks are linked without re-embedding.
+    Returns the :func:`local_corpus.index` summary, or ``None`` when no
+    corpus path is configured. Honors ``intake['pdf_hybrid_pages']`` so
+    operators can opt into the per-page text+OCR merge from intake.
+
+    Runs the synchronous extractor on the default thread-pool executor —
+    the daemon's event loop stays responsive to SIGTERM and STOP-file
+    polls while OCR / pdfplumber crunch through large FOIA dumps.
+    """
+    from research_agent.tools import local_corpus
+
+    intake = job.intake or {}
+    corpus_raw = intake.get("corpus")
+    if not isinstance(corpus_raw, str) or not corpus_raw.strip():
+        return None
+
+    corpus_path = Path(corpus_raw.strip())
+    if not corpus_path.is_absolute():
+        corpus_path = Path.cwd() / corpus_path
+    if not corpus_path.exists():
+        raise FileNotFoundError(f"corpus path does not exist: {corpus_path}")
+
+    hybrid_pages = _intake_bool(intake.get("pdf_hybrid_pages"))
+    per_page = _intake_bool(intake.get("corpus_dossier"))
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None,
+        lambda: local_corpus.index(
+            corpus_path,
+            job,
+            per_page=per_page,
+            hybrid_pages=hybrid_pages,
+        ),
+    )
+
+
 async def run_daemon(
     job_id: str,
     *,
@@ -1092,6 +1141,45 @@ async def run_daemon(
             return 1
 
     job.set_status("running")
+
+    try:
+        corpus_summary = await _index_intake_corpus(job)
+        if corpus_summary is not None:
+            intake = job.intake or {}
+            emit(
+                job,
+                "INFO",
+                "daemon",
+                "corpus_indexed",
+                {
+                    "corpus": str(intake.get("corpus")),
+                    "corpus_dossier": _intake_bool(intake.get("corpus_dossier")),
+                    "pdf_hybrid_pages": _intake_bool(intake.get("pdf_hybrid_pages")),
+                    "pdf_max_pages": intake.get("pdf_max_pages"),
+                    **corpus_summary,
+                },
+            )
+    except Exception as exc:
+        logger.exception("daemon: corpus indexing failed for job %s", job.id)
+        try:
+            emit(
+                job,
+                "ERROR",
+                "daemon",
+                "error",
+                {
+                    "stage": "corpus_index",
+                    "error": str(exc),
+                    "traceback": traceback.format_exc(),
+                },
+            )
+        except Exception:
+            pass
+        try:
+            job.set_status("failed")
+        except Exception:
+            pass
+        return 1
 
     if _loop._load_latest_plan(job) is None:
         try:
