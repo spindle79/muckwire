@@ -434,10 +434,10 @@ def _index_pdf_per_page(
 
     # Materialise per-page sub-chunks first so we can batch-embed every
     # row produced by this file in a single embeddings call. Each entry
-    # is ``(page_no, page_chunk_no_or_None, cleaned_chunk_text)``; an
-    # empty page contributes no entries (and is counted as a skipped
-    # page so coverage rollup can see the gap).
-    page_chunks: list[tuple[int, int | None, str]] = []
+    # is ``(page_no, page_chunk_no_or_None, cleaned_chunk_text,
+    # source_text_with_identity)``; an empty page contributes no entries
+    # (and is counted as a skipped page so coverage rollup can see the gap).
+    page_chunks: list[tuple[int, int | None, str, str]] = []
     pages_indexed = 0
     pages_skipped = 0
     for page_no, page_text in pages:
@@ -451,10 +451,35 @@ def _index_pdf_per_page(
             continue
         pages_indexed += 1
         if len(within_page) == 1:
-            page_chunks.append((page_no, None, within_page[0]))
+            chunk_text = within_page[0]
+            page_chunks.append(
+                (
+                    page_no,
+                    None,
+                    chunk_text,
+                    _per_page_source_text(
+                        chunk_text,
+                        parent_file=file_url,
+                        page_no=page_no,
+                        page_chunk=None,
+                    ),
+                )
+            )
         else:
             for idx, sub in enumerate(within_page, start=1):
-                page_chunks.append((page_no, idx, sub))
+                page_chunks.append(
+                    (
+                        page_no,
+                        idx,
+                        sub,
+                        _per_page_source_text(
+                            sub,
+                            parent_file=file_url,
+                            page_no=page_no,
+                            page_chunk=idx,
+                        ),
+                    )
+                )
 
     if not page_chunks:
         return {
@@ -464,7 +489,7 @@ def _index_pdf_per_page(
             "pages_skipped": pages_skipped,
         }
 
-    chunk_shas = [content_sha256(clean_content(c)) for _, _, c in page_chunks]
+    chunk_shas = [content_sha256(clean_content(c)) for _, _, _, c in page_chunks]
     existing = _existing_shas(job.db_path, chunk_shas)
     to_embed_idx = [
         i for i, sha in enumerate(chunk_shas) if sha not in existing
@@ -483,7 +508,9 @@ def _index_pdf_per_page(
 
     chunks_indexed = 0
     chunks_skipped = 0
-    for i, (page_no, page_chunk_no, chunk_text) in enumerate(page_chunks):
+    for i, (page_no, page_chunk_no, _chunk_text_for_embedding, source_text) in enumerate(
+        page_chunks
+    ):
         embedding_blob = new_blobs.get(i)
         if embedding_blob is None:
             chunks_skipped += 1
@@ -493,7 +520,7 @@ def _index_pdf_per_page(
             job,
             url=file_url,
             title=file_path.name,
-            raw_content=chunk_text,
+            raw_content=source_text,
             kind="local",
             embedding=embedding_blob,
             metadata={
@@ -511,6 +538,33 @@ def _index_pdf_per_page(
         "pages_indexed": pages_indexed,
         "pages_skipped": pages_skipped,
     }
+
+
+def _per_page_source_text(
+    chunk_text: str,
+    *,
+    parent_file: str,
+    page_no: int,
+    page_chunk: int | None,
+) -> str:
+    """Return persisted text with deterministic page identity metadata.
+
+    ``write_source`` dedupes by cleaned content hash, but dossier mode needs
+    two pages with identical visible text to remain two distinct Source rows
+    with different ``metadata.page_no`` values. The HTML comment is stable,
+    human-inspectable in raw markdown, and does not affect the embedding
+    input because callers embed ``chunk_text`` before passing this persisted
+    source text to storage.
+    """
+    page_chunk_text = "" if page_chunk is None else str(page_chunk)
+    return (
+        "<!-- local_corpus_page_identity\n"
+        f"parent_file: {parent_file}\n"
+        f"page_no: {page_no}\n"
+        f"page_chunk: {page_chunk_text}\n"
+        "-->\n\n"
+        f"{chunk_text}"
+    )
 
 
 def _existing_shas(db_path: Path, shas: list[str]) -> set[str]:

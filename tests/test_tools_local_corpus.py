@@ -506,6 +506,63 @@ def test_index_per_page_pdf_writes_one_source_per_page(
     assert parent_files == {pdf_path.as_uri()}
 
 
+def test_index_per_page_duplicate_pdf_pages_remain_distinct_sources(
+    tmp_path: Path, job: Job, monkeypatch, stub_models_config: dict
+) -> None:
+    """Identical visible page text must still persist one Source per page."""
+    _stub_embed(monkeypatch)
+    corpus = tmp_path / "duplicate_pdf"
+    corpus.mkdir()
+    pdf_path = corpus / "dupe.pdf"
+    pdf_path.write_bytes(b"%PDF-fake")
+
+    duplicate_text = "Same page body alpha. " * 40
+
+    from research_agent.tools import pdf as pdf_mod
+
+    monkeypatch.setattr(
+        pdf_mod,
+        "extract_pages_sync",
+        lambda *a, **k: [(1, duplicate_text), (2, duplicate_text)],
+    )
+
+    summary = local_corpus.index(
+        corpus, job, models_config=stub_models_config, per_page=True
+    )
+
+    assert summary["files_indexed"] == 1
+    assert summary["pages_indexed"] == 2
+    assert summary["chunks_indexed"] == 2
+
+    conn = db.connect(job.db_path)
+    try:
+        rows = conn.execute(
+            "SELECT s.sha256 FROM sources s"
+            " JOIN job_sources js ON js.source_id = s.id"
+            " WHERE js.job_id = ?"
+            " ORDER BY s.id ASC",
+            (job.id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert len(rows) == 2
+    assert len({row["sha256"] for row in rows}) == 2
+    page_nos = [_read_sidecar(job, row["sha256"])["metadata"]["page_no"] for row in rows]
+    assert page_nos == [1, 2]
+
+    def _no_embed(chunks, base_url, model):  # noqa: ARG001
+        raise AssertionError("re-embedded already-indexed duplicate page chunks")
+
+    monkeypatch.setattr(local_corpus, "_embed_chunks_sync", _no_embed)
+    second = local_corpus.index(
+        corpus, job, models_config=stub_models_config, per_page=True
+    )
+    assert second["chunks_indexed"] == 0
+    assert second["chunks_skipped"] == 2
+    assert second["pages_indexed"] == 2
+
+
 def test_index_per_page_oversize_page_subchunks_within_page(
     tmp_path: Path, job: Job, monkeypatch, stub_models_config: dict
 ) -> None:
