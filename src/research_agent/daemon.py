@@ -1036,12 +1036,27 @@ async def _index_intake_corpus(job: Job) -> dict[str, int] | None:
         raise FileNotFoundError(f"corpus path does not exist: {corpus_path}")
 
     hybrid_pages = bool(intake.get("pdf_hybrid_pages"))
+    corpus_dossier = bool(intake.get("corpus_dossier"))
 
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
+    summary = await loop.run_in_executor(
         None,
-        lambda: local_corpus.index(corpus_path, job, hybrid_pages=hybrid_pages),
+        lambda: local_corpus.index(
+            corpus_path,
+            job,
+            hybrid_pages=hybrid_pages,
+            per_page=corpus_dossier,
+        ),
     )
+    if corpus_dossier and summary is not None:
+        skipped = summary.get("skipped")
+        skipped_list = skipped if isinstance(skipped, list) else None
+        _declare_dossier_coverage_units(
+            job,
+            trigger="corpus_walk",
+            skipped=skipped_list,
+        )
+    return summary
 
 
 async def run_daemon(
@@ -1137,6 +1152,7 @@ async def run_daemon(
                 "corpus_indexed",
                 {
                     "corpus": str(intake.get("corpus")),
+                    "corpus_dossier": bool(intake.get("corpus_dossier")),
                     "pdf_hybrid_pages": bool(intake.get("pdf_hybrid_pages")),
                     "pdf_max_pages": intake.get("pdf_max_pages"),
                     **corpus_summary,
