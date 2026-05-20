@@ -64,6 +64,7 @@ EventKind = Literal[
     "hypothesis_updated",
     "corpus_doc_added",
     "corpus_indexed",
+    "coverage_declared",
     "llm_call",
     "lmstudio_degraded",
     "lmstudio_recovered",
