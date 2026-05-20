@@ -476,10 +476,11 @@ def update_from_extract_findings(
     written = 0
     if isinstance(result, dict):
         written = int(result.get("findings_written") or 0)
+    unit_status: CoverageStatus = "complete" if written > 0 else "pending"
     set_matching_units(
         job,
         dims,
-        "complete",
+        unit_status,
         attempt={**attempt, "reason": f"findings_written={written}"},
     )
 
@@ -551,6 +552,93 @@ def mark_task_failed(job: Job, task: dict[str, Any], reason: str) -> None:
             "reason": reason,
         },
     )
+
+
+def _pending_extract_source_ids(job: Job) -> set[int]:
+    """Return ``source_id`` values already queued for ``extract_findings``."""
+    conn = db.connect(job.db_path)
+    try:
+        rows = conn.execute(
+            """
+            SELECT payload_json FROM tasks
+            WHERE job_id = ? AND kind = 'extract_findings'
+              AND status IN ('pending', 'running')
+            """,
+            (job.id,),
+        ).fetchall()
+    finally:
+        conn.close()
+    out: set[int] = set()
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"])
+        except (TypeError, ValueError):
+            continue
+        if isinstance(payload, dict):
+            sid = payload.get("source_id")
+            if isinstance(sid, int):
+                out.add(sid)
+    return out
+
+
+def enqueue_dossier_extract_tasks(job: Job, plan_version: int) -> list[int]:
+    """Enqueue ``extract_findings`` for every per-page local source (dossier jobs).
+
+    Runs after corpus index + ``declare_corpus_units`` so each indexed page
+    gets a dedicated extraction pass with a page-scoped sub-question instead
+    of relying on ``local_corpus_query`` top-K fan-out alone.
+    """
+    from research_agent.orchestrator.plan import TaskSpec
+    from research_agent.storage.sources import read_source_metadata
+    from research_agent.storage.tasks import enqueue
+
+    if not bool((job.intake or {}).get("corpus_dossier")):
+        return []
+
+    already = _pending_extract_source_ids(job)
+    conn = db.connect(job.db_path)
+    try:
+        rows = conn.execute(
+            """
+            SELECT s.id AS source_id, s.sha256 AS sha, s.title AS title
+            FROM sources s
+            JOIN job_sources js ON js.source_id = s.id
+            WHERE js.job_id = ? AND s.kind = ?
+            ORDER BY s.id ASC
+            """,
+            (job.id, "local"),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    specs: list[TaskSpec] = []
+    for row in rows:
+        source_id = int(row["source_id"])
+        if source_id in already:
+            continue
+        try:
+            meta = read_source_metadata(job, str(row["sha"]))
+        except FileNotFoundError:
+            continue
+        if meta.get("page_no") is None:
+            continue
+        parent = meta.get("parent_file") or row["title"] or "document"
+        page_no = int(meta["page_no"])
+        sub_question = (
+            f"Extract 2–6 structured findings from page {page_no} of this document "
+            f"(people, organizations, places, dates, incident/UAP details). "
+            f"File: {parent}"
+        )
+        specs.append(
+            TaskSpec(
+                kind="extract_findings",
+                payload={"source_id": source_id, "sub_question": sub_question},
+            )
+        )
+
+    if not specs:
+        return []
+    return enqueue(job, specs, plan_version)
 
 
 def declare_corpus_units(job: Job) -> list[CoverageUnit]:
@@ -758,6 +846,7 @@ __all__ = [
     "CoverageUnit",
     "blocking_units",
     "declare_corpus_units",
+    "enqueue_dossier_extract_tasks",
     "declare_coverage",
     "declare_file_gap",
     "declare_from_intake",

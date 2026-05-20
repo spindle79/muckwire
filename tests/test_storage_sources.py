@@ -14,6 +14,7 @@ from research_agent.storage.jobs import Job
 from research_agent.storage.sources import (
     clean_content,
     content_sha256,
+    content_sha256_for_write,
     read_source_metadata,
     read_source_sidecar,
     write_source,
@@ -100,6 +101,14 @@ def test_content_sha256_is_lowercase_hex() -> None:
     assert len(digest) == 64
     assert digest == digest.lower()
     assert all(c in "0123456789abcdef" for c in digest)
+
+
+def test_content_sha256_for_write_separates_identical_page_bodies() -> None:
+    """Dossier pages with the same text still get distinct source rows."""
+    body = "1.4(a)"
+    meta_a = {"parent_file": "file:///doc.pdf", "page_no": 6, "page_chunk": None}
+    meta_b = {"parent_file": "file:///doc.pdf", "page_no": 7, "page_chunk": None}
+    assert content_sha256_for_write(body, meta_a) != content_sha256_for_write(body, meta_b)
 
 
 # ---------------------------------------------------------------------------
