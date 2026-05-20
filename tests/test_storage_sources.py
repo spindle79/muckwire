@@ -519,8 +519,21 @@ def test_read_source_sidecar_missing_raises(job1: Job) -> None:
         read_source_sidecar(job1, "0" * 64)
 
 
+def test_read_source_sidecar_rejects_non_sha_path_values(job1: Job) -> None:
+    """The sidecar reader must not allow traversal through the sha argument."""
+    bad_values = [
+        "../outside",
+        "f" * 63,
+        "g" * 64,
+        "A" * 64,
+    ]
+    for value in bad_values:
+        with pytest.raises(ValueError):
+            read_source_sidecar(job1, value)
+
+
 def test_read_source_metadata_handles_legacy_missing_key(
-    job1: Job, tmp_path: Path
+    job1: Job,
 ) -> None:
     """Sidecars written before metadata existed surface as an empty dict, not a crash."""
     sha = content_sha256(clean_content("legacy body"))

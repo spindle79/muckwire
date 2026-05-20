@@ -64,6 +64,7 @@ from research_agent.storage.jobs import Job, _atomic_write_json, _atomic_write_t
 
 _HORIZONTAL_WS = re.compile(r"[ \t]+")
 _BLANK_LINE_RUN = re.compile(r"\n{3,}")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def clean_content(raw: str) -> str:
@@ -240,8 +241,8 @@ def read_source_sidecar(job: Job, sha: str) -> dict[str, Any]:
     that expect a possibly-missing sidecar should catch and treat the
     metadata as empty.
     """
-    if not isinstance(sha, str) or not sha:
-        raise ValueError("sha must be a non-empty string")
+    if not isinstance(sha, str) or not _SHA256_RE.fullmatch(sha):
+        raise ValueError("sha must be a lowercase 64-character sha256 hex digest")
     path = job.root / "sources" / f"{sha}.json"
     raw = path.read_text(encoding="utf-8")
     data = json.loads(raw)
