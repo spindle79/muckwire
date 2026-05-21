@@ -11,7 +11,7 @@ fields on `task_template[].payload`.
 |---|---:|---|---|
 | `translate_non_english` | `false` | job or task payload | When true, extraction writes an English mirror for each non-English finding as `findings/NNNNNN.translation.md`. |
 | `fragments` | `false` | job | Records that the operator requested section-fragment synthesis with `research start --fragments`. Runtime routing still uses `RESEARCH_FRAGMENT_SYNTH=1`, which the CLI sets for the spawned daemon. |
-| `corpus_dossier` | `false` | job | When true, the daemon indexes every corpus / inbox file in per-page mode (`local_corpus.index(..., per_page=True)`), writing one Source row per PDF page with `metadata.{parent_file, page_no, page_chunk}` stamped on the sidecar. Required by the dossier rollup (epic #359). Enabled with `research start --corpus-dossier`; the flag is rejected without `--corpus`. |
+| `corpus_dossier` | `false` | job | When true, daemon local-corpus ingestion passes `per_page=True` to `local_corpus.index(...)` for files it indexes, writing one Source row per PDF page with `metadata.{parent_file, page_no, page_chunk}` stamped on the sidecar. Required by the dossier rollup (epic #359). Enabled with `research start --corpus-dossier`; the flag is rejected without `--corpus`. |
 
 `translate_non_english` is intentionally opt-in. Use it for multilingual
 archive runs where French, Spanish, or other non-English primary sources are
@@ -69,7 +69,10 @@ research start --skip-intake --goal "Exhaustive dossier of UFO records" \
 `--corpus-dossier` requires `--corpus`; running with the flag set and
 no corpus path exits with code 2. The flag writes
 `"corpus_dossier": true` into `jobs/<job-id>/intake.json`. With the flag
-on, the daemon:
+on, local-corpus ingestion runs in per-page mode whenever the daemon
+indexes operator-supplied files. The current inbox watcher already uses
+this field; the corpus-walk startup path will use the same intake field
+when it lands. In per-page mode, the indexer:
 
 - Routes every PDF through `pdf.extract_pages_sync()` (one page per
   `Source` row, sub-chunked within the page when a single page exceeds

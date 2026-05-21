@@ -147,6 +147,64 @@ def test_start_job_corpus_dossier_without_corpus_raises(
         )
 
 
+def test_start_job_rejects_intake_corpus_dossier_without_corpus(
+    tmp_path: Path,
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicit intake cannot bypass the corpus requirement for dossier mode."""
+    from research_agent.errors import InvalidGoal
+
+    jobs_root = tmp_path / "jobs"
+    monkeypatch.setattr(daemon_mod, "spawn_daemon", lambda _job_id, **_kw: 4242)
+    monkeypatch.setattr(daemon_mod, "is_daemon_alive", lambda *_a, **_kw: False)
+
+    with pytest.raises(InvalidGoal):
+        start_job(
+            "No corpus intake dossier",
+            intake={
+                "goal": "No corpus intake dossier",
+                "domain": "general",
+                "corpus_dossier": True,
+            },
+            jobs_root=jobs_root,
+            db_path=db_path,
+        )
+
+
+def test_start_job_explicit_intake_uses_corpus_param_for_dossier(
+    tmp_path: Path,
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When callers pass intake plus corpus, dossier mode persists both."""
+    import json as _json
+
+    jobs_root = tmp_path / "jobs"
+    monkeypatch.setattr(daemon_mod, "spawn_daemon", lambda _job_id, **_kw: 4242)
+    monkeypatch.setattr(daemon_mod, "is_daemon_alive", lambda *_a, **_kw: False)
+    corpus_dir = tmp_path / "corpus"
+    corpus_dir.mkdir()
+
+    started = start_job(
+        "Explicit intake dossier",
+        corpus=str(corpus_dir),
+        corpus_dossier=True,
+        intake={
+            "goal": "Explicit intake dossier",
+            "domain": "general",
+        },
+        jobs_root=jobs_root,
+        db_path=db_path,
+    )
+
+    intake_data = _json.loads(
+        (jobs_root / started.job_id / "intake.json").read_text(encoding="utf-8")
+    )
+    assert intake_data["corpus"] == str(corpus_dir)
+    assert intake_data["corpus_dossier"] is True
+
+
 def test_start_job_local_passes_env_to_daemon_without_mutating_process(
     tmp_path: Path,
     db_path: Path,

@@ -351,6 +351,113 @@ def test_start_corpus_dossier_without_corpus_exits_2(
     assert "--corpus" in combined
 
 
+def test_start_interactive_corpus_dossier_requires_final_corpus(
+    isolated_jobs_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Clearing the prefilled corpus in intake cannot leave dossier mode enabled."""
+    corpus_dir = isolated_jobs_repo / "corpus" / "dossier"
+    corpus_dir.mkdir(parents=True)
+
+    def _fake_run_intake(
+        *,
+        corpus=None,
+        corpus_dossier=False,
+        budget_usd=None,
+        time_cap=None,
+        fragments=False,
+    ):
+        assert corpus == str(corpus_dir)
+        assert corpus_dossier is True
+        return {
+            "goal": "Interactive dossier no corpus",
+            "goal_one_sentence": "dossier",
+            "domain": "general",
+            "time_cap": time_cap,
+            "budget_usd": budget_usd,
+            "output_orientation": "internal brief",
+            "aggressiveness": "balanced",
+            "corpus_path": None,
+            "corpus_dossier": True,
+            "fragments": bool(fragments),
+            "followup_qa": [],
+        }
+
+    def _spawn_daemon(_job_id: str) -> int:
+        raise AssertionError("daemon should not spawn without a final corpus")
+
+    monkeypatch.setattr(cli.intake, "run_intake", _fake_run_intake)
+    monkeypatch.setattr(cli.daemon, "spawn_daemon", _spawn_daemon)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "start",
+            "--corpus",
+            str(corpus_dir),
+            "--corpus-dossier",
+        ],
+    )
+
+    assert result.exit_code == 2
+    combined = (result.stdout or "") + (result.stderr or "")
+    assert "--corpus-dossier" in combined
+    assert "--corpus" in combined
+
+
+def test_start_interactive_corpus_dossier_can_be_declined(
+    isolated_jobs_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The CLI flag pre-fills intake, but the final intake answer wins."""
+    corpus_dir = isolated_jobs_repo / "corpus" / "dossier"
+    corpus_dir.mkdir(parents=True)
+    monkeypatch.setattr(cli.daemon, "spawn_daemon", lambda _job_id: 12345)
+
+    def _fake_run_intake(
+        *,
+        corpus=None,
+        corpus_dossier=False,
+        budget_usd=None,
+        time_cap=None,
+        fragments=False,
+    ):
+        assert corpus == str(corpus_dir)
+        assert corpus_dossier is True
+        return {
+            "goal": "Interactive dossier declined",
+            "goal_one_sentence": "declined",
+            "domain": "general",
+            "time_cap": time_cap,
+            "budget_usd": budget_usd,
+            "output_orientation": "internal brief",
+            "aggressiveness": "balanced",
+            "corpus_path": str(corpus_dir),
+            "corpus_dossier": False,
+            "fragments": bool(fragments),
+            "followup_qa": [],
+        }
+
+    monkeypatch.setattr(cli.intake, "run_intake", _fake_run_intake)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "start",
+            "--corpus",
+            str(corpus_dir),
+            "--corpus-dossier",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
+    job_root = isolated_jobs_repo / "jobs" / f"{today}-interactive-dossier-declined"
+    intake_data = json.loads((job_root / "intake.json").read_text(encoding="utf-8"))
+    assert intake_data.get("corpus_dossier") in (None, False)
+    assert intake_data["corpus"] == str(corpus_dir)
+
+
 def test_start_no_dossier_flag_leaves_intake_clean(
     isolated_jobs_repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -530,15 +530,17 @@ corpus, moved to `inbox/processed/`, logged as `corpus_doc_added`, and
 used to trigger a tactical replan while the daemon is still running.
 
 `--corpus-dossier` (epic #359) opts the job into per-page dossier-mode
-ingestion. With the flag set, the daemon routes every PDF in the
-supplied `--corpus` directory (and any live `--inbox` documents) through
-`pdf.extract_pages_sync()` and writes one `Source` row per page, with
-`metadata.parent_file` / `metadata.page_no` / `metadata.page_chunk`
-stamped on the sidecar. The dossier rollup (filed in M2 of the epic)
-uses this grouping to produce one dossier per file plus a structured
-`dossiers` artifact; without dossier mode the existing thematic-sampling
-synthesis stays the default. The flag requires `--corpus` to be set
-(otherwise `research start` exits with code 2).
+ingestion. With the flag set, local-corpus indexing runs in per-page
+mode when the daemon indexes operator-supplied files; the current live
+`--inbox` watcher already forwards the flag, and the corpus-walk startup
+path will use the same intake field when it lands. In dossier mode PDFs
+go through `pdf.extract_pages_sync()` and write one `Source` row per
+page, with `metadata.parent_file` / `metadata.page_no` /
+`metadata.page_chunk` stamped on the sidecar. The dossier rollup (filed
+in M2 of the epic) uses this grouping to produce one dossier per file
+plus a structured `dossiers` artifact; without dossier mode the existing
+thematic-sampling synthesis stays the default. The flag requires
+`--corpus` to be set (otherwise `research start` exits with code 2).
 
 `--input-csv PATH --artifact NAME --key COL` imports an existing CSV into
 `jobs/<id>/artifacts/` before the daemon starts so a run can enrich missing

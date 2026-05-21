@@ -23,6 +23,19 @@ async def test_lifecycle_tools_are_listed() -> None:
     assert all(tool.outputSchema for tool in tools)
 
 
+def test_start_research_job_schema_accepts_corpus_dossier() -> None:
+    """MCP start_research_job exposes corpus and corpus_dossier fields."""
+    tool = next(
+        tool
+        for tool in mcp_server.list_tool_definitions()
+        if tool.name == "start_research_job"
+    )
+    properties = tool.inputSchema["properties"]
+
+    assert "corpus" in properties
+    assert "corpus_dossier" in properties
+
+
 @pytest.mark.asyncio
 async def test_list_jobs_returns_structured_shape_and_telemetry(
     tmp_path: Path,

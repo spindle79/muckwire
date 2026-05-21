@@ -358,13 +358,6 @@ def start_job(
     key_cols = list(key_columns or [])
     if input_csv is not None and not key_cols:
         raise InvalidGoal("key_columns is required when input_csv is set")
-    if corpus_dossier and not corpus and (
-        intake is None or not intake.get("corpus")
-    ):
-        raise InvalidGoal(
-            "corpus_dossier requires corpus to be set (epic #359)"
-        )
-
     if intake is None:
         intake_data: dict[str, Any] = {
             "goal": goal_text,
@@ -383,8 +376,17 @@ def start_job(
     else:
         intake_data = dict(intake)
         intake_data["goal"] = goal_text
+        if corpus and not str(intake_data.get("corpus") or "").strip():
+            intake_data["corpus"] = corpus
         if corpus_dossier:
             intake_data["corpus_dossier"] = True
+
+    if intake_data.get("corpus_dossier") and not str(
+        intake_data.get("corpus") or ""
+    ).strip():
+        raise InvalidGoal(
+            "corpus_dossier requires corpus to be set (epic #359)"
+        )
 
     if max_tasks is not None:
         intake_data["max_tasks"] = max_tasks
