@@ -408,7 +408,7 @@ def _index_pdf_per_page(
     *,
     base_url: str,
     model_name: str,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     """Index one PDF as one :class:`Source` row per page (dossier mode).
 
     Calls :func:`pdf.extract_pages_sync` to get ``[(page_no, text), ...]``
@@ -418,7 +418,8 @@ def _index_pdf_per_page(
     in ``metadata``. The chunker never crosses page boundaries.
 
     Returns the same shape as :func:`index`'s per-file accumulator so
-    the outer loop can fold the counters in unchanged.
+    the outer loop can fold the counters and skipped-file details in
+    unchanged.
     """
     from research_agent.tools import pdf as pdf_mod  # lazy
 

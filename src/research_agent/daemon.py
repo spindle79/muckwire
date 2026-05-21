@@ -673,11 +673,8 @@ def _declare_dossier_coverage_units(
     """
     from research_agent.storage import coverage
 
-    units = coverage.declare_corpus_units(job)
-    files = {unit.dimensions.get("file") for unit in units if unit.dimensions.get("file")}
-    page_count = sum(1 for unit in units if "page" in unit.dimensions)
-
-    confirmed_gap_count = 0
+    coverage.declare_corpus_units(job)
+    confirmed_gap_files: set[str] = set()
     for record in skipped or []:
         file_url = record.get("file_url")
         reason = record.get("reason") or "extraction_failed"
@@ -690,7 +687,7 @@ def _declare_dossier_coverage_units(
                 "failed to declare confirmed_gap for %s: %s", file_url, exc
             )
             continue
-        confirmed_gap_count += 1
+        confirmed_gap_files.add(file_url)
         emit(
             job,
             "WARN",
@@ -699,6 +696,10 @@ def _declare_dossier_coverage_units(
             {"file_url": file_url, "reason": reason, "trigger": trigger},
         )
 
+    units = coverage.list_units(job)
+    files = {unit.dimensions.get("file") for unit in units if unit.dimensions.get("file")}
+    page_count = sum(1 for unit in units if "page" in unit.dimensions)
+    confirmed_gap_count = len(confirmed_gap_files)
     emit(
         job,
         "INFO",
@@ -708,7 +709,7 @@ def _declare_dossier_coverage_units(
             "trigger": trigger,
             "file_count": len(files),
             "page_count": page_count,
-            "total_units": len(units) + confirmed_gap_count,
+            "total_units": len(units),
             "files_confirmed_gap": confirmed_gap_count,
         },
     )

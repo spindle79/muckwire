@@ -1628,6 +1628,46 @@ async def test_inbox_watcher_dossier_records_confirmed_gap_for_skipped_file(
     assert cov_payload["total_units"] == 1
 
 
+def test_declare_dossier_coverage_units_gap_rerun_reports_actual_total(
+    seeded_job: Job,
+) -> None:
+    """Idempotent gap reruns should not inflate coverage_declared.total_units."""
+    from research_agent.storage import coverage
+
+    skipped = [
+        {
+            "file_url": "file:///rerun-broken.pdf",
+            "reason": "empty_content",
+        }
+    ]
+
+    first = daemon._declare_dossier_coverage_units(
+        seeded_job, trigger="inbox", skipped=skipped
+    )
+    second = daemon._declare_dossier_coverage_units(
+        seeded_job, trigger="inbox", skipped=skipped
+    )
+
+    assert first == 1
+    assert second == 1
+    units = coverage.list_units(seeded_job)
+    assert len(units) == 1
+    assert units[0].status == "confirmed_gap"
+
+    conn = db.connect(seeded_job.db_path)
+    try:
+        rows = conn.execute(
+            "SELECT payload_json FROM events WHERE job_id = ? AND kind = ?",
+            (seeded_job.id, "coverage_declared"),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    payloads = [json.loads(row["payload_json"]) for row in rows]
+    assert [payload["total_units"] for payload in payloads] == [1, 1]
+    assert [payload["files_confirmed_gap"] for payload in payloads] == [1, 1]
+
+
 # ---------------------------------------------------------------------------
 # _cancel_with_timeout — bounds daemon teardown so a hung watcher can't block exit
 # ---------------------------------------------------------------------------
