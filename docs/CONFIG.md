@@ -12,6 +12,9 @@ fields on `task_template[].payload`.
 | `translate_non_english` | `false` | job or task payload | When true, extraction writes an English mirror for each non-English finding as `findings/NNNNNN.translation.md`. |
 | `fragments` | `false` | job | Records that the operator requested section-fragment synthesis with `research start --fragments`. Runtime routing still uses `RESEARCH_FRAGMENT_SYNTH=1`, which the CLI sets for the spawned daemon. |
 | `corpus_dossier` | `false` | job | When true, daemon local-corpus ingestion passes `per_page=True` to `local_corpus.index(...)` for files it indexes, writing one Source row per PDF page with `metadata.{parent_file, page_no, page_chunk}` stamped on the sidecar. Required by the dossier rollup (epic #359). Enabled with `research start --corpus-dossier`; the flag is rejected without `--corpus`. |
+| `pdf_hybrid_pages` | `false` | job | When true, local-corpus PDF extraction merges the text layer with Tesseract OCR per page (`tools.pdf` hybrid mode). Use for FOIA / archival corpora that mix typed sections with scanned inserts. |
+| `pdf_max_pages` | `1000` | job | Per-PDF page cap for local-corpus indexing. Clamped to `MAX_PAGES_HARD_CAP = 1000` regardless of intake value. |
+| `pdf_max_chars` | `2_000_000` | job | Per-PDF character cap for local-corpus indexing. |
 
 `translate_non_english` is intentionally opt-in. Use it for multilingual
 archive runs where French, Spanish, or other non-English primary sources are
@@ -37,6 +40,25 @@ Job-level CLI opt-in:
 ```bash
 research start --skip-intake --goal "Algerian war archives" --translate-non-english
 ```
+
+## Embedding Dimension Migration (issue #376)
+
+The local-corpus embedding tier now emits **768-dimensional** vectors
+(model `qwen3-embedding-4b-dwq` in `config/models.yaml`, model
+`text-embedding-nomic-embed-text-v1.5` in `config/models.local.yaml`).
+`tools/local_corpus.py` sets `EMBED_DIM = 768` to match.
+
+Pre-upgrade jobs persisted 1024-d float32 blobs in `sources.embedding`.
+Running `research search` against those rows after upgrading will not search
+them cleanly: current code skips mismatched vectors, and older code paths may
+fail while reading them. Choose one:
+
+- **Drop the index**: `rm data/index.sqlite` and re-run `research start`
+  for any job whose corpus you still need (re-embeds at $0 on local).
+- **Per-job re-index**: delete the affected rows from `sources` and
+  `job_sources` and re-run `research start` for that job.
+
+New jobs created after the upgrade are unaffected.
 
 ## Fragment Synthesis Rollout
 
