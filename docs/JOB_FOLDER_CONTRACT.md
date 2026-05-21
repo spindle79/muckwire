@@ -157,10 +157,10 @@ Each entry in `subgoals` carries (schema 2+):
 - `done` boolean.
 - `gap_reason`, `gap_status` optional strings (planner-documented gaps).
 - `stage` integer ≥ 1 (default `1`). Groups subgoals into ordered phases
-  for the dossier stage ladder; the synth guard refuses to close a
-  stage `N+k` subgoal while any stage `N` subgoal is still open. Plans
-  loaded from schema 1 jobs deserialise with `stage=1` for every
-  subgoal.
+  for the dossier stage ladder; planned synth guards can use it to avoid
+  closing a stage `N+k` subgoal while any stage `N` subgoal is still
+  open. Plans loaded from schema 1 jobs deserialise with `stage=1` for
+  every subgoal.
 
 ### `findings/NNNNNN.md`
 

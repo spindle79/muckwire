@@ -17,6 +17,7 @@ import pytest
 from research_agent.storage import db, jobs
 from research_agent.storage.jobs import (
     DEFAULT_JOBS_ROOT,
+    JOB_SCHEMA_VERSION,
     Job,
     _atomic_write_text,
     _slugify,
@@ -184,6 +185,7 @@ def test_create_writes_full_folder_layout(
     assert job_meta["goal"] == sample_intake["goal"]
     assert job_meta["status"] == "pending"
     assert job_meta["intake"] == sample_intake
+    assert job_meta["schema_version"] == JOB_SCHEMA_VERSION
 
 
 def test_create_inserts_db_row(sample_intake: dict, jobs_root: Path, db_path: Path) -> None:
