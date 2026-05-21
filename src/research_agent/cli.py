@@ -139,6 +139,14 @@ def start_command(
         "--corpus",
         help="Path to a local corpus directory to scope the research.",
     ),
+    corpus_dossier: bool = typer.Option(
+        False,
+        "--corpus-dossier/--no-corpus-dossier",
+        help="Opt into per-page dossier-mode ingestion for the supplied"
+        " corpus (epic #359). Routes PDFs through pdf.extract_pages_sync()"
+        " and writes one Source row per page so the dossier rollup can"
+        " group findings by file. Requires --corpus.",
+    ),
     disk_cap_gb: float = typer.Option(
         10.0,
         "--disk-cap-gb",
@@ -219,6 +227,12 @@ def start_command(
     ),
 ) -> None:
     """Register a new research job and spawn its background daemon."""
+    if corpus_dossier and not corpus:
+        typer.echo(
+            "--corpus-dossier requires --corpus to be set (epic #359)",
+            err=True,
+        )
+        raise typer.Exit(code=2)
     if skip_intake:
         if not goal or not goal.strip():
             typer.echo("--goal is required when --skip-intake is set", err=True)
@@ -235,9 +249,12 @@ def start_command(
         }
         if corpus:
             intake_data["corpus"] = corpus
+        if corpus_dossier:
+            intake_data["corpus_dossier"] = True
     else:
         answers = intake.run_intake(
             corpus=corpus,
+            corpus_dossier=corpus_dossier,
             budget_usd=budget_usd,
             time_cap=time_cap,
             fragments=fragments,
@@ -252,6 +269,8 @@ def start_command(
             "fragments": bool(answers.get("fragments") or fragments),
             "inbox": inbox,
         }
+        if answers.get("corpus_dossier"):
+            intake_data["corpus_dossier"] = True
 
     if max_tasks is not None:
         if max_tasks < 1:
@@ -291,12 +310,21 @@ def start_command(
         intake_data["fragments"] = True
 
     goal_text = str(intake_data.get("goal") or "").strip()
+    effective_corpus = str(intake_data.get("corpus") or "").strip() or None
+    effective_corpus_dossier = bool(intake_data.get("corpus_dossier"))
+    if effective_corpus_dossier and effective_corpus is None:
+        typer.echo(
+            "--corpus-dossier requires --corpus to be set (epic #359)",
+            err=True,
+        )
+        raise typer.Exit(code=2)
     try:
         result = public_api.start_job(
             goal_text,
             budget_usd=budget_usd,
             time_cap=time_cap,
-            corpus=corpus,
+            corpus=effective_corpus,
+            corpus_dossier=effective_corpus_dossier,
             disk_cap_gb=disk_cap_gb,
             max_tasks=max_tasks,
             local=local,
