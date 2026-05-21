@@ -156,6 +156,31 @@ def test_extract_hybrid_pages_falls_back_to_layered_when_empty(monkeypatch):
     assert "### Text layer" not in text
 
 
+def test_extract_hybrid_pages_ignores_outline_only(monkeypatch):
+    """Outline metadata alone is not enough to skip the layered fallback."""
+
+    class _OutlineItem:
+        title = "Appendix A"
+
+    class _BlankPage:
+        @staticmethod
+        def extract_text():
+            return ""
+
+    class _FakeReader:
+        def __init__(self, *_args, **_kwargs):
+            self.pages = [_BlankPage()]
+            self.outline = [_OutlineItem()]
+
+    fake_pypdf = type("M", (), {"PdfReader": _FakeReader})
+    monkeypatch.setitem(__import__("sys").modules, "pypdf", fake_pypdf)
+    monkeypatch.setattr(pdf, "_pdfplumber_page_layers", lambda *a, **k: [])
+    monkeypatch.setattr(pdf, "_ocr_pages_texts", lambda *a, **k: [])
+
+    md, pages = pdf._extract_hybrid_pages(ARXIV_PDF, max_pages=1)
+    assert (md, pages) == ("", 0)
+
+
 def test_extract_hybrid_pages_caps_at_max_pages(monkeypatch):
     """``max_pages`` clamps both the pypdf loop and the OCR pages list."""
     captured_max: list[int] = []

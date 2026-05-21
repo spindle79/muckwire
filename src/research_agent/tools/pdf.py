@@ -548,7 +548,9 @@ def _extract_hybrid_pages(path: Path, max_pages: int) -> tuple[str, int]:
         parts.append(f"## Page {idx + 1}\n\n{merged}")
         pages_with_content += 1
 
-    return "\n\n".join(parts), pages_with_content or page_count
+    if pages_with_content == 0:
+        return "", 0
+    return "\n\n".join(parts), pages_with_content
 
 
 # ---------------------------------------------------------------------------
