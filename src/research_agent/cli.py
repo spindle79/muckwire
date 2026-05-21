@@ -147,6 +147,24 @@ def start_command(
         " and writes one Source row per page so the dossier rollup can"
         " group findings by file. Requires --corpus.",
     ),
+    pdf_hybrid_pages: bool = typer.Option(
+        False,
+        "--pdf-hybrid-pages",
+        help=(
+            "When indexing corpus PDFs, merge each page's text layer with a"
+            " Tesseract OCR supplement (for mixed text + scanned regions)."
+        ),
+    ),
+    pdf_max_pages: int = typer.Option(
+        1000,
+        "--pdf-max-pages",
+        min=1,
+        max=1000,
+        help=(
+            "Max pages to extract from each PDF when indexing a local corpus"
+            " (default 1000)."
+        ),
+    ),
     disk_cap_gb: float = typer.Option(
         10.0,
         "--disk-cap-gb",
@@ -249,8 +267,11 @@ def start_command(
         }
         if corpus:
             intake_data["corpus"] = corpus
+            intake_data["pdf_max_pages"] = pdf_max_pages
         if corpus_dossier:
             intake_data["corpus_dossier"] = True
+        if pdf_hybrid_pages:
+            intake_data["pdf_hybrid_pages"] = True
     else:
         answers = intake.run_intake(
             corpus=corpus,
@@ -308,6 +329,14 @@ def start_command(
 
     if fragments:
         intake_data["fragments"] = True
+
+    if pdf_hybrid_pages:
+        intake_data["pdf_hybrid_pages"] = True
+
+    if intake_data.get("corpus") or corpus:
+        if corpus:
+            intake_data.setdefault("corpus", corpus)
+        intake_data["pdf_max_pages"] = pdf_max_pages
 
     goal_text = str(intake_data.get("goal") or "").strip()
     effective_corpus = str(intake_data.get("corpus") or "").strip() or None

@@ -331,6 +331,39 @@ def test_start_corpus_dossier_flag_persists_intake(
     assert intake_data["corpus"] == str(corpus_dir)
 
 
+def test_start_pdf_corpus_flags_persist_intake(
+    isolated_jobs_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--pdf-hybrid-pages/--pdf-max-pages write corpus PDF knobs to intake."""
+    monkeypatch.setattr(cli.daemon, "spawn_daemon", lambda _job_id: 12345)
+    corpus_dir = isolated_jobs_repo / "corpus" / "pdf-flags"
+    corpus_dir.mkdir(parents=True)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "start",
+            "--skip-intake",
+            "--goal",
+            "PDF corpus flags",
+            "--corpus",
+            str(corpus_dir),
+            "--pdf-hybrid-pages",
+            "--pdf-max-pages",
+            "250",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
+    job_root = isolated_jobs_repo / "jobs" / f"{today}-pdf-corpus-flags"
+    intake_data = json.loads((job_root / "intake.json").read_text(encoding="utf-8"))
+    assert intake_data["corpus"] == str(corpus_dir)
+    assert intake_data["pdf_hybrid_pages"] is True
+    assert intake_data["pdf_max_pages"] == 250
+
+
 def test_start_corpus_dossier_without_corpus_exits_2(
     isolated_jobs_repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
